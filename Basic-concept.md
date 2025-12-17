@@ -93,7 +93,7 @@ MySQL5.0之后引入了Compact这么一种紧凑的行格式，Dynamic和Compres
 char 是定长的，varchar 是变长的，变长字段实际存储的数据的长度（大小）不固定的。所以，在存储数据的时候，也要把数据占用的大小存起来，存到「变长字段长度列表」里面。  
 为了展示「变长字段长度列表」具体是怎么保存「变长字段的真实数据占用的字节数」，我们先创建这样一张表，字符集是 ascii（所以每一个字符占用的 1 字节），行格式是 Compact，t_user 表中 name 和 phone 字段都是变长字段：  
 现在 t_user 表里有这三条记录：  
-<img width="550" height="190" alt="image" src="https://github.com/user-attachments/assets/a818fc3b-3b36-4ac7-8051-4d6143d90d80" />  
+<img width="550" height="190" alt="image" src="https://github.com/user-attachments/assets/a818fc3b-3b36-4ac7-8051-4d6143d90d80" />    
 接下来，我们看看看看这三条记录的行格式中的 「变长字段长度列表」是怎样存储的。  
 <img width="2234" height="598" alt="image" src="https://github.com/user-attachments/assets/77219a70-5e4f-469a-a3ba-9d9787092ae3" />  
 name 列的值为 a，真实数据占用的字节数是 1 字节，十六进制 0x01；  
