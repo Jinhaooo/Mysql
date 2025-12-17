@@ -80,6 +80,78 @@ t_order.ibd，t_order 的表数据会保存在这个文件。表数据既可以�
 数据段：存放 B + 树的叶子节点的区的集合；  
 回滚段：存放的是回滚数据的区的集合。  
 
+## InnoDB行格式
+行格式（row_format），就是一条记录的存储结构。  
+InnoDB 提供了 4 种行格式，分别是Redundant、Compact、Dynamic和 Compressed 行格式。  
+Redundant 是很古老的行格式了，MySQL 5.0 版本之前用的行格式，现在基本没人用了。  
+MySQL5.0之后引入了Compact这么一种紧凑的行格式，Dynamic和Compressed是基于Compact优化的，同样紧凑的行格式，在MySQL5.7之后，默认使用Dynamic格式.
+
+## Compact格式
+<img width="2336" height="562" alt="image" src="https://github.com/user-attachments/assets/dbd96443-82d0-4d1e-b501-352481055308" />  
+### 记录的额外信息  
+1.变长字段长度列表  
+char 是定长的，varchar 是变长的，变长字段实际存储的数据的长度（大小）不固定的。所以，在存储数据的时候，也要把数据占用的大小存起来，存到「变长字段长度列表」里面。  
+为了展示「变长字段长度列表」具体是怎么保存「变长字段的真实数据占用的字节数」，我们先创建这样一张表，字符集是 ascii（所以每一个字符占用的 1 字节），行格式是 Compact，t_user 表中 name 和 phone 字段都是变长字段：  
+现在 t_user 表里有这三条记录：  
+<img width="550" height="190" alt="image" src="https://github.com/user-attachments/assets/a818fc3b-3b36-4ac7-8051-4d6143d90d80" />  
+接下来，我们看看看看这三条记录的行格式中的 「变长字段长度列表」是怎样存储的。  
+<img width="2234" height="598" alt="image" src="https://github.com/user-attachments/assets/77219a70-5e4f-469a-a3ba-9d9787092ae3" />  
+name 列的值为 a，真实数据占用的字节数是 1 字节，十六进制 0x01；  
+phone 列的值为 123，真实数据占用的字节数是 3 字节，十六进制 0x03；  
+age 列和 id 列不是变长字段，所以这里不用管。  
+这些变长字段的真实数据占用的字节数会按照列的顺序逆序存放。  
+同理得到第二条记录：  
+<img width="2204" height="578" alt="image" src="https://github.com/user-attachments/assets/09806607-79cd-47b3-b55b-9fd3076e9b8b" />  
+第三条记录中 phone 列的值是 NULL，NULL 是不会存放在行格式中记录的真实数据部分里的，所以「变长字段长度列表」里不需要保存值为 NULL 的变长字段的长度。  
+<img width="2232" height="596" alt="image" src="https://github.com/user-attachments/assets/f8c14706-ae2c-40cf-a51f-bfdcb960b26e" />  
+
+为什么「变长字段长度列表」的信息要按照逆序存放？  
+主要是因为「记录头信息」中指向下一个记录的指针，指向的是下一条记录的「记录头信息」和「真实数据」之间的位置，这样的好处是向左读就是记录头信息，向右读就是真实数据，比较方便。  
+「变长字段长度列表」中的信息之所以要逆序存放，是因为这样可以使得位置靠前的记录的真实数据和数据对应的字段长度信息可以同时在一个 CPU Cache Line 中，这样就可以提高 CPU Cache 的命中率。  
+同理，null值列表也要逆序排放。
+
+变长字段长度列表不是必须的，当数据中没有变长字段时，就不会有这个列表了。  
+
+2.Null值列表  
+表中的某些列可能会存储 NULL 值，如果把这些 NULL 值都放到记录的真实数据中会比较浪费空间，所以 Compact 行格式把这些值为 NULL 的列存储到 NULL值列表中。  
+如果存在允许 NULL 值的列，则每个列对应一个二进制位（bit），二进制位按照列的顺序逆序排列。 
+二进制位的值为1时，代表该列的值为NULL。二进制位的值为0时，代表该列的值不为NULL。  
+<img width="1020" height="582" alt="image" src="https://github.com/user-attachments/assets/a55ce39d-c7a5-463a-aa7f-d527a2056d5b" />  
+ InnoDB 是用整数字节的二进制位来表示 NULL 值列表的，不足八位需要在高位补零。  
+
+ NULL值列表也不是固定的，当数据表的字段都定义成 NOT NULL 的时候，这时候表里的行格式就不会有 NULL 值列表了。所以在设计数据库表的时候，通常都是建议将字段设置为 NOT NULL，这样可以至少节省 1 字节的空间（NULL 值列表至少占用 1 字节空间）。  
+
+ 3.记录头信息  
+ 记录头信息中包含的内容很多，这里说几个比较重要的：  
+ delete_mask ：标识此条数据是否被删除。从这里可以知道，我们执行 detele 删除记录的时候，并不会真正的删除记录，只是将这个记录的 delete_mask 标记为 1。  
+ next_record：下一条记录的位置。从这里可以知道，记录与记录之间是通过链表组织的。在前面我也提到了，指向的是下一条记录的「记录头信息」和「真实数据」之间的位置，这样的好处是向左读就是记录头信息，向右读就是真实数据，比较方便。  
+ record_type：表示当前记录的类型，0表示普通记录，1表示B+树非叶子节点记录，2表示最小记录，3表示最大记录。  
+
+ ### 记录的真实数据
+ <img width="1336" height="288" alt="image" src="https://github.com/user-attachments/assets/7fef29ac-95b5-40a3-80f4-14646438719f" />  
+ 记录真实数据部分除了我们定义的字段，还有三个隐藏字段，分别为：row_id、trx_id、roll_pointer。  
+ row_id:如果我们建表的时候指定了主键或者唯一约束列，那么就没有 row_id 隐藏字段了。如果既没有指定主键，又没有唯一约束，那么 InnoDB 就会为记录添加 row_id 隐藏字段。row_id不是必需的，占用 6 个字节。  
+ trx_id:事务id，表示这个数据是由哪个事务生成的。 trx_id是必需的，占用 6 个字节。  
+ roll_pointer:这条记录上一个版本的指针。roll_pointer 是必需的，占用 7 个字节。
+
+ ## 行溢出时，MySQL是怎么处理的
+ 一个页的大小一般是 16KB，也就是 16384字节，而一个 varchar(n) 类型的列最多可以存储 65532字节，一些大对象如 TEXT、BLOB 可能存储更多的数据，这时一个页可能就存不了一条记录。这个时候就会发生行溢出，多的数据就会存到另外的「溢出页」中。  
+ 如果一个数据页存不了一条记录，InnoDB 存储引擎会自动将溢出的数据存放到「溢出页」中。在一般情况下，InnoDB 的数据都是存放在 「数据页」中。但是当发生行溢出时，溢出的数据会存放到「溢出页」中。  
+Compact行格式处理的方式是：当发生行溢出时，在记录的真实数据处只会保存该列的一部分数据，而把剩余的数据放在「溢出页」中，然后真实数据处用 20 字节存储指向溢出页的地址，从而可以找到剩余数据所在的页。  
+<img width="1400" height="508" alt="image" src="https://github.com/user-attachments/assets/c255ae33-cfb8-4e28-b098-e0ccfdb57c1e" />  
+Compressed 和 Dynamic 这两个行格式和 Compact 非常类似，主要的区别在于处理行溢出数据时有些区别。这两种格式采用完全的行溢出方式，记录的真实数据处不会存储该列的一部分数据，只存储 20 个字节的指针来指向溢出页。而实际的数据都存储在溢出页中，看起来就像下面这样：  
+<img width="1230" height="470" alt="image" src="https://github.com/user-attachments/assets/0046f421-6041-45cc-bb54-a7927b9c627f" />  
+
+
+
+
+
+ 
+
+
+
+
+
 
 
 
